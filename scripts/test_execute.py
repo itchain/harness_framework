@@ -516,6 +516,121 @@ class TestMainCli:
 
 
 # ---------------------------------------------------------------------------
+# Mode dispatch (MODE_CONFIG)
+# ---------------------------------------------------------------------------
+
+class TestModeDispatch:
+    """phases/{task}/index.json의 mode 필드에 따른 동작 분기 검증."""
+
+    def _make_executor(self, tmp_project, mode_value=None, phase_name="demo"):
+        d = tmp_project / "phases" / "x-demo"
+        d.mkdir(exist_ok=True)
+        index = {
+            "project": "T",
+            "phase": phase_name,
+            "steps": [{"step": 0, "name": "a", "status": "pending"}],
+        }
+        if mode_value is not None:
+            index["mode"] = mode_value
+        (d / "index.json").write_text(json.dumps(index, ensure_ascii=False))
+
+        with patch.object(ex, "ROOT", tmp_project):
+            inst = ex.StepExecutor("x-demo")
+        inst._root = str(tmp_project)
+        inst._phases_dir = tmp_project / "phases"
+        inst._phase_dir = d
+        inst._phase_dir_name = "x-demo"
+        inst._index_file = d / "index.json"
+        inst._top_index_file = tmp_project / "phases" / "index.json"
+        return inst
+
+    def test_missing_mode_defaults_to_feature(self, tmp_project):
+        inst = self._make_executor(tmp_project, mode_value=None)
+        assert inst._mode == "feature"
+        assert inst._max_retries == 3
+        assert inst._branch_prefix == "feat-"
+        assert inst._commit_type == "feat"
+
+    def test_patch_mode_config(self, tmp_project):
+        inst = self._make_executor(tmp_project, mode_value="patch")
+        assert inst._mode == "patch"
+        assert inst._max_retries == 2
+        assert inst._branch_prefix == "fix-"
+        assert inst._commit_type == "fix"
+
+    def test_refactor_mode_config(self, tmp_project):
+        inst = self._make_executor(tmp_project, mode_value="refactor")
+        assert inst._max_retries == 2
+        assert inst._branch_prefix == "refactor-"
+        assert inst._commit_type == "refactor"
+
+    def test_mvp_mode_config(self, tmp_project):
+        inst = self._make_executor(tmp_project, mode_value="mvp")
+        assert inst._max_retries == 3
+        assert inst._branch_prefix == "feat-"
+        assert inst._commit_type == "feat"
+
+    def test_unknown_mode_falls_back_with_warning(self, tmp_project, capsys):
+        inst = self._make_executor(tmp_project, mode_value="bogus")
+        captured = capsys.readouterr()
+        assert "unknown mode 'bogus'" in captured.out
+        assert inst._mode == "feature"
+        assert inst._commit_type == "feat"
+
+    def test_patch_mode_branch_name(self, tmp_project):
+        inst = self._make_executor(tmp_project, mode_value="patch", phase_name="login-fix")
+        responses = [
+            MagicMock(returncode=0, stdout="main\n", stderr=""),  # current branch
+            MagicMock(returncode=1, stdout="", stderr="not found"),  # rev-parse --verify
+            MagicMock(returncode=0, stdout="", stderr=""),  # checkout -b
+        ]
+        call_idx = {"i": 0}
+        calls = []
+
+        def fake_git(*args):
+            calls.append(args)
+            idx = call_idx["i"]
+            call_idx["i"] += 1
+            if idx < len(responses):
+                return responses[idx]
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        inst._run_git = fake_git
+        inst._checkout_branch()
+
+        checkout_call = [c for c in calls if c[0] == "checkout"][0]
+        assert "fix-login-fix" in checkout_call
+
+    def test_patch_mode_commit_prefix(self, tmp_project):
+        inst = self._make_executor(tmp_project, mode_value="patch", phase_name="login-fix")
+        calls = []
+
+        def fake_git(*args):
+            calls.append(args)
+            if args[:2] == ("diff", "--cached"):
+                return MagicMock(returncode=1)  # has changes
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        inst._run_git = fake_git
+        inst._commit_step(0, "reproduce")
+
+        commit_msgs = [c[2] for c in calls if c[0] == "commit"]
+        assert len(commit_msgs) == 2
+        assert "fix(login-fix):" in commit_msgs[0]
+        assert "chore(login-fix):" in commit_msgs[1]
+
+    def test_patch_mode_preamble_mentions_2_retries(self, tmp_project):
+        inst = self._make_executor(tmp_project, mode_value="patch")
+        result = inst._build_preamble("", "")
+        assert "2회 수정 시도" in result
+
+    def test_patch_mode_preamble_commit_example_is_fix(self, tmp_project):
+        inst = self._make_executor(tmp_project, mode_value="patch", phase_name="bug-1")
+        result = inst._build_preamble("", "")
+        assert "fix(bug-1):" in result
+
+
+# ---------------------------------------------------------------------------
 # _check_blockers (= 이전 main() error/blocked 체크)
 # ---------------------------------------------------------------------------
 
