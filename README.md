@@ -1,4 +1,4 @@
-# TABION Harness Framework
+# Harness Framework
 
 Claude Code 기반으로 **설계 → 계획 → 구현 → 검증**을 자동화하는 프레임워크. 개발자는 **의도 전달과 검증·승인**만 하고, 나머지는 하네스가 규율 있게 수행한다.
 
